@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fnord Blast</title>
+<style>
+  html,body{margin:0;height:100%;background:#120a1f;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{height:100vh;max-width:100vw;aspect-ratio:720/900;background:#1c1033;cursor:crosshair;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="900"></canvas>
+<script>
+"use strict";
+const W = 720, H = 900;
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+
+// ---------- constantes physique ----------
+const DT = 1 / 120;
+const G = 900;            // gravité px/s²
+const BR = 7;             // rayon bille
+const PR = 11;            // rayon peg
+const E_PEG = 0.78, E_WALL = 0.9;
+const SPEED = 720;
+const LAUNCH = { x: W / 2, y: 36 };
+const BURN_TIME = 0.55;
+
+// ---------- niveau ----------
+function rng(seed) { return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
+
+function buildLevel() {
+  const rand = rng(1337), pegs = [];
+  const sp = 54;
+  for (let row = 0, y = 190; y < 780; row++, y += sp * 0.87) {
+    for (let x = 60 + (row % 2) * sp / 2; x < W - 40; x += sp) {
+      // trous : un anneau vide au centre et un couloir
+      const dx = x - W / 2, dy = y - 470;
+      if (Math.hypot(dx, dy) < 70) continue;
+      if (Math.abs(dx) < 14 && y > 600) continue;
+      pegs.push({ x, y, orange: false, lit: false, burn: 0, gone: false });
+    }
+  }
+  const idx = pegs.map((_, i) => i).sort(() => rand() - 0.5);
+  idx.slice(0, 25).forEach(i => pegs[i].orange = true);
+  return pegs;
+}
+
+// ---------- état ----------
+let pegs, ball, state, balls, score, hits, power = true, bucket, particles = [];
+let mouse = { x: W / 2, y: 400 }, msg = "";
+let t0 = 0, stuckT = 0;
+
+function reset() {
+  pegs = buildLevel(); balls = 10; score = 0; hits = 0;
+  state = "aim"; ball = null; msg = "";
+  bucket = { x: 100, dir: 1, w: 96 };
+  particles = [];
+}
+
+function aimDir() {
+  let a = Math.atan2(mouse.y - LAUNCH.y, mouse.x - LAUNCH.x);
+  a = Math.max(0.15, Math.min(Math.PI - 0.15, a));
+  return { x: Math.cos(a), y: Math.sin(a) };
+}
+
+// ---------- moteur (partagé par le jeu ET la prédiction) ----------
+function step(b, dt, onEvent) {
+  b.vy += G * dt;
+  b.x += b.vx * dt; b.y += b.vy * dt;
+  if (b.x < BR) { b.x = BR; b.vx = -b.vx * E_WALL; onEvent({ k: "wall", x: b.x, y: b.y }); }
+  if (b.x > W - BR) { b.x = W - BR; b.vx = -b.vx * E_WALL; onEvent({ k: "wall", x: b.x, y: b.y }); }
+  if (b.y < BR) { b.y = BR; b.vy = -b.vy * E_WALL; onEvent({ k: "wall", x: b.x, y: b.y }); }
+  for (const p of pegs) {
+    if (p.gone) continue;
+    const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy), min = BR + PR;
+    if (d < min && d > 0) {
+      const nx = dx / d, ny = dy / d;
+      b.x = p.x + nx * min; b.y = p.y + ny * min;
+      const vn = b.vx * nx + b.vy * ny;
+      if (vn < 0) { b.vx -= (1 + E_PEG) * vn * nx; b.vy -= (1 + E_PEG) * vn * ny; }
+      onEvent({ k: "peg", p, x: b.x, y: b.y });
+    }
+  }
+}
+
+// Le pouvoir de Fnord : on rejoue exactement la même physique pour voir les 2 prochains rebonds
+function predict(dir) {
+  const b = { x: LAUNCH.x + dir.x * 30, y: LAUNCH.y + dir.y * 30, vx: dir.x * SPEED, vy: dir.y * SPEED };
+  const pts = [{ x: b.x, y: b.y }], bounces = [];
+  let n = 0, tail = 0;
+  for (let i = 0; i < 1500 && n < 2; i++) {
+    step(b, DT, ev => { bounces.push(ev); n++; pts.push({ x: ev.x, y: ev.y }); });
+    if (i % 4 === 0) pts.push({ x: b.x, y: b.y });
+    if (b.y > H) break;
+  }
+  return { pts, bounces };
+}
+
+function addParticle(x, y, spread, up) {
+  particles.push({ x, y, vx: (Math.random() - .5) * spread, vy: -Math.random() * up - 10,
+    life: 0, max: .3 + Math.random() * .4, s: 3 + Math.random() * 4 });
+}
+
+function hitPeg(p) {
+  if (p.lit) return;
+  p.lit = true; hits++;
+  score += (p.orange ? 100 : 10) * (1 + Math.floor(hits / 6));
+  if (power) p.burn = BURN_TIME;
+}
+
+function launch() {
+  const d = aimDir();
+  ball = { x: LAUNCH.x + d.x * 30, y: LAUNCH.y + d.y * 30, vx: d.x * SPEED, vy: d.y * SPEED };
+  balls--; hits = 0; state = "fly"; stuckT = 0; t0 = ball.y;
+}
+
+function endShot(freeBall) {
+  if (freeBall) { balls++; msg = "Bille gratuite !"; } else msg = "";
+  for (const p of pegs) if (p.lit) p.gone = true;
+  ball = null;
+  const left = pegs.filter(p => p.orange && !p.gone).length;
+  if (left === 0) { state = "over"; msg = "VICTOIRE ! (R pour rejouer)"; }
+  else if (balls <= 0) { state = "over"; msg = "Perdu... (R pour rejouer)"; }
+  else state = "aim";
+}
+
+// ---------- boucle ----------
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min(0.05, (now - last) / 1000); last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function update(dt) {
+  bucket.x += bucket.dir * 90 * dt;
+  if (bucket.x < bucket.w / 2) bucket.dir = 1;
+  if (bucket.x > W - bucket.w / 2) bucket.dir = -1;
+
+  for (const p of pegs) {
+    if (p.burn > 0) {
+      p.burn -= dt;
+      if (Math.random() < .5) addParticle(p.x + (Math.random() - .5) * 14, p.y, 30, 70);
+      if (p.burn <= 0) { p.gone = true; for (let i = 0; i < 14; i++) addParticle(p.x, p.y, 160, 140); }
+    }
+  }
+  for (const q of particles) { q.life += dt; q.x += q.vx * dt; q.y += q.vy * dt; }
+  particles = particles.filter(q => q.life < q.max);
+
+  if (state !== "fly") return;
+  const prevY = ball.y;
+  step(ball, dt, ev => { if (ev.k === "peg") hitPeg(ev.p); });
+  if (power) for (let i = 0; i < 2; i++) addParticle(ball.x, ball.y, 40, 30);
+
+  // peg coincé : on brûle ce qui touche la bille, sinon on les éteint
+  if (Math.hypot(ball.vx, ball.vy) < 60) stuckT += dt; else stuckT = 0;
+  if (stuckT > 0.8) {
+    for (const p of pegs) if (!p.gone && Math.hypot(ball.x - p.x, ball.y - p.y) < BR + PR + 4) { hitPeg(p); p.gone = true; }
+    stuckT = 0;
+  }
+
+  const by = H - 22;
+  if (prevY < by && ball.y >= by && Math.abs(ball.x - bucket.x) < bucket.w / 2) { endShot(true); return; }
+  if (ball.y > H + 20) endShot(false);
+}
+
+// ---------- rendu ----------
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#2a1650"); g.addColorStop(1, "#120a1f");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // pegs
+  for (const p of pegs) {
+    if (p.gone) continue;
+    let col = p.orange ? "#ff8c1a" : "#3a8dff";
+    if (p.burn > 0) col = Math.random() < .5 ? "#ffd23a" : "#ff4a1a";
+    else if (p.lit) col = p.orange ? "#ffd9a0" : "#a8d0ff";
+    ctx.beginPath(); ctx.arc(p.x, p.y, PR, 0, 7);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.stroke();
+  }
+
+  // bucket
+  ctx.fillStyle = "#6f4cc9";
+  ctx.fillRect(bucket.x - bucket.w / 2, H - 22, bucket.w, 8);
+  ctx.fillStyle = "#b99bff";
+  ctx.fillRect(bucket.x - bucket.w / 2 - 6, H - 30, 8, 16);
+  ctx.fillRect(bucket.x + bucket.w / 2 - 2, H - 30, 8, 16);
+
+  // prédiction de Fnord
+  if (state === "aim" && power) {
+    const { pts, bounces } = predict(aimDir());
+    ctx.save();
+    ctx.setLineDash([6, 6]); ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,200,80,.9)";
+    ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)); ctx.stroke();
+    ctx.setLineDash([]);
+    bounces.forEach((ev, i) => {
+      ctx.beginPath(); ctx.arc(ev.x, ev.y, BR + 3 + i, 0, 7);
+      ctx.strokeStyle = i ? "#ff7a3a" : "#ffe45a"; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.font = "bold 14px system-ui";
+      ctx.fillText(i + 1, ev.x + 12, ev.y - 12);
+    });
+    ctx.restore();
+  }
+
+  // canon
+  const d = aimDir();
+  ctx.strokeStyle = "#cfcfe8"; ctx.lineWidth = 12; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(LAUNCH.x, LAUNCH.y); ctx.lineTo(LAUNCH.x + d.x * 34, LAUNCH.y + d.y * 34); ctx.stroke();
+  ctx.beginPath(); ctx.arc(LAUNCH.x, LAUNCH.y, 18, 0, 7); ctx.fillStyle = "#8d6cf0"; ctx.fill();
+
+  // bille
+  if (ball) {
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, BR, 0, 7);
+    ctx.fillStyle = power ? "#ffb02e" : "#e8e8f5"; ctx.fill();
+  }
+
+  // particules de feu
+  ctx.globalCompositeOperation = "lighter";
+  for (const q of particles) {
+    const k = 1 - q.life / q.max;
+    ctx.fillStyle = `rgba(255,${Math.floor(60 + 160 * k)},30,${k * .8})`;
+    ctx.beginPath(); ctx.arc(q.x, q.y, q.s * k, 0, 7); ctx.fill();
+  }
+  ctx.globalCompositeOperation = "source-over";
+
+  // HUD
+  const left = pegs.filter(p => p.orange && !p.gone).length;
+  ctx.fillStyle = "#fff"; ctx.font = "bold 18px system-ui"; ctx.textAlign = "left";
+  ctx.fillText("Score " + score, 14, 28);
+  ctx.fillText("Billes " + balls, 14, 52);
+  ctx.textAlign = "right";
+  ctx.fillText("Orange " + left, W - 14, 28);
+  ctx.fillStyle = power ? "#ffb02e" : "#999";
+  ctx.fillText("Pouvoir de Fnord : " + (power ? "ON" : "OFF") + "  (F)", W - 14, 52);
+  if (msg) {
+    ctx.textAlign = "center"; ctx.fillStyle = "#fff"; ctx.font = "bold 34px system-ui";
+    ctx.fillText(msg, W / 2, 130);
+  }
+  ctx.textAlign = "left";
+}
+
+// ---------- entrées ----------
+function setMouse(e) {
+  const r = cv.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) * W / r.width;
+  mouse.y = (e.clientY - r.top) * H / r.height;
+}
+cv.addEventListener("pointermove", setMouse);
+cv.addEventListener("pointerdown", e => { setMouse(e); if (state === "aim") launch(); });
+addEventListener("keydown", e => {
+  if (e.key === "f" || e.key === "F") power = !power;
+  if (e.key === "r" || e.key === "R") reset();
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

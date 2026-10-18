@@ -1,0 +1,14 @@
+{
+  "name": "fnord-blast",
+  "version": "0.1.0",
+  "description": "Fnord Blast",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-packager . FnordBlast --platform=win32 --arch=x64 --out=dist --overwrite"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.9.0"
+  }
+}
