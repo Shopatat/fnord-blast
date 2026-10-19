@@ -2,14 +2,26 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Fnord Blast</title>
+<meta name="theme-color" content="#3b2210">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fnord Blast">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" rel="stylesheet">
 <style>
-  html,body{margin:0;height:100%;background:#3b2210;overflow:hidden}
-  body{display:flex;align-items:center;justify-content:center}
-  canvas{width:min(100vw, calc(100vh * 9 / 16));height:auto;aspect-ratio:9/16;display:block;touch-action:none;user-select:none}
+  html,body{margin:0;height:100%;background:#3b2210;overflow:hidden;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+  /* sur iPhone, le jeu reste dans la zone sûre (encoche, barre d'accueil) */
+  body{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:100vh;height:100dvh;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  canvas{width:min(100%, calc((100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 9 / 16));height:auto;aspect-ratio:9/16;display:block;
+    touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+  @supports (height:100dvh){canvas{width:min(100%, calc((100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 9 / 16))}}
 </style>
 </head>
 <body>
@@ -179,6 +191,7 @@ let balls, score, shotScore, shotHits, freeGiven, powerShots, power, fever, stuc
 let particles = [], floats = [], banners = [], clearQueue = [], clearT = 0, clearN = 0;
 let timeScale = 1, slowTarget = 1, result = null, resultT = 0, t = 0;
 let mouse = { x: W / 2, y: 700 }, aiming = false;
+let touchMode = matchMedia("(pointer: coarse)").matches;
 let buttons = [];
 
 function startLevel(i) {
@@ -719,7 +732,7 @@ function drawPlay() {
   const aim = aimDir();
   if (phase === "aim" && screen === "play") {
     drawGuide(aim);
-    if (balls === 10 && score === 0) text("Clique pour tirer !", W / 2, 1060, 48, "#fff", "#2a1206", "center", 9);
+    if (balls === 10 && score === 0) text(touchMode ? "Glisse et lâche pour tirer !" : "Clique pour tirer !", W / 2, 1060, touchMode ? 42 : 48, "#fff", "#2a1206", "center", 9);
   }
   drawMedal(aim);
   if (phase === "aim") drawBall(LAUNCH.x, LAUNCH.y, powerShots > 0);
@@ -798,7 +811,7 @@ function drawMap() {
   text("Touche un taquet VERT : Fnord voit les 2 prochains rebonds", W / 2, 1066, 23, "#fff", "#2a0c10", "center", 4);
   text("et brûle les taquets au contact pendant 2 tirs.", W / 2, 1096, 23, "#fff", "#2a0c10", "center", 4);
   button(560, 1176, 136, 80, muted ? "Son : non" : "Son : oui", WOOD, () => { muted = !muted; }, 24);
-  text("Souris : viser · clic : tirer · R : rejouer · M : son", 290, 1216, 21, "#ffe8c0", "#2a0c10", "center", 4);
+  text(touchMode ? "Glisse pour viser · lâche pour tirer" : "Souris : viser · clic : tirer · R : rejouer · M : son", 290, 1216, 21, "#ffe8c0", "#2a0c10", "center", 4);
   drawEffects();
 }
 
@@ -818,6 +831,7 @@ function toCanvas(e) {
 cv.addEventListener("pointermove", e => { const p = toCanvas(e); mouse.x = p.x; mouse.y = p.y; });
 cv.addEventListener("pointerdown", e => {
   audio();
+  touchMode = e.pointerType !== "mouse";
   const p = toCanvas(e); mouse.x = p.x; mouse.y = p.y;
   for (let i = buttons.length - 1; i >= 0; i--) {
     const b = buttons[i];
@@ -827,7 +841,9 @@ cv.addEventListener("pointerdown", e => {
   if (e.pointerType === "mouse") launch();
   else { aiming = true; cv.setPointerCapture(e.pointerId); }   // tactile : on vise en glissant, on tire en levant le doigt
 });
+cv.addEventListener("pointercancel", () => { aiming = false; });
 cv.addEventListener("pointerup", e => {
+  audio();   // iOS ne débloque parfois le son qu'au moment où le doigt se lève
   if (!aiming) return;
   aiming = false;
   const p = toCanvas(e); mouse.x = p.x; mouse.y = p.y;
@@ -840,7 +856,15 @@ addEventListener("keydown", e => {
   if (k === "escape") screen = "map";
 });
 
+// L'écran reste fixe : pas de zoom au double tap ni au pincement (iOS ignore parfois le viewport)
+for (const ev of ["gesturestart", "gesturechange", "dblclick"]) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+document.addEventListener("touchend", e => e.preventDefault(), { passive: false });
+
 requestAnimationFrame(frame);
+</script>
+<script>
+/* Hors ligne (PWA) : seulement en http(s), pas en ouvrant le fichier en local ni dans l'appli Windows */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
