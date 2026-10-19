@@ -4,8 +4,8 @@ const path = require("path");
 function createWindow() {
   Menu.setApplicationMenu(null);
   const win = new BrowserWindow({
-    width: 720, height: 900, minWidth: 360, minHeight: 450,
-    title: "Fnord Blast", backgroundColor: "#120a1f",
+    width: 540, height: 960, minWidth: 270, minHeight: 480, useContentSize: true,
+    title: "Fnord Blast", backgroundColor: "#3b2210",
     webPreferences: { contextIsolation: true }
   });
   win.loadFile(path.join(__dirname, "index.html"));
